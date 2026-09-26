@@ -1,10 +1,9 @@
 <script setup lang="ts">
 import { reactive } from 'vue'
-import { addEvidence, addUnit, deleteUnit, state } from '../store'
+import { addUnit, deleteUnit, state } from '../store'
 import type { UnitType } from '../types'
 
 const unitForm = reactive({ label: '', type: 'deposit' as UnitType, note: '' })
-const evForm = reactive({ ref: '', text: '' })
 
 const typeNames: Record<UnitType, string> = {
   deposit: '堆积',
@@ -20,14 +19,8 @@ async function submitUnit() {
   unitForm.note = ''
 }
 
-async function submitEvidence() {
-  await addEvidence(evForm.ref, evForm.text)
-  evForm.ref = ''
-  evForm.text = ''
-}
-
 function confirmDelete(id: string, label: string) {
-  if (window.confirm(`删除层位 ${label}？涉及它的关系将一并删除（可整体撤销）。`)) {
+  if (window.confirm(`删除层位 ${label}？涉及它的关系、证据与附件将一并删除（可整体撤销，复核审计保留）。`)) {
     void deleteUnit(id)
   }
 }
@@ -61,24 +54,6 @@ function confirmDelete(id: string, label: string) {
         <button class="danger sm" title="删除层位" @click.stop="confirmDelete(u.id, u.label)">删</button>
       </li>
       <li v-if="state.units.length === 0" class="muted">暂无层位</li>
-    </ul>
-  </section>
-
-  <section class="panel">
-    <h3>证据（{{ state.evidences.length }}）</h3>
-    <form class="form" @submit.prevent="submitEvidence">
-      <input v-model="evForm.ref" placeholder="出处，如 田野日记·第13页" required />
-      <input v-model="evForm.text" placeholder="摘要（可选）" />
-      <button type="submit">登记证据</button>
-    </form>
-    <ul class="list">
-      <li v-for="e in state.evidences" :key="e.id">
-        <span class="grow">
-          <b>{{ e.ref }}</b>
-          <small v-if="e.text">　{{ e.text }}</small>
-        </span>
-      </li>
-      <li v-if="state.evidences.length === 0" class="muted">暂无证据</li>
     </ul>
   </section>
 </template>

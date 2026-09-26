@@ -18,6 +18,70 @@ export function buildGraph(edges: OrderEdge[]): DirectedGraph {
   return g
 }
 
+/**
+ * 证据复核闭环的成环拆分：按边的加入顺序贪心加入，会成环的边归入冲突集。
+ * 采纳会造成环时不静默丢弃——关系连同复核决定全部保留，仅被标记为冲突，
+ * 冲突边不进入有效偏序计算。返回无环骨架、冲突 id 集合与每条冲突边的环路径。
+ */
+export function conflictSplit(edges: OrderEdge[]): {
+  skeleton: OrderEdge[]
+  conflictIds: Set<string>
+  cycles: Map<string, string[]>
+} {
+  const skeleton: OrderEdge[] = []
+  const conflictIds = new Set<string>()
+  const cycles = new Map<string, string[]>()
+  for (const e of edges) {
+    const cycle = cyclePathIfAdded(skeleton, e.from, e.to)
+    if (cycle) {
+      conflictIds.add(e.id)
+      cycles.set(e.id, cycle)
+    } else {
+      skeleton.push(e)
+    }
+  }
+  return { skeleton, conflictIds, cycles }
+}
+
+/**
+ * 推断关系：有效观察偏序的传递闭包中，不由观察直接给出的可达对，
+ * 随有效观察集实时重算。返回推断边及一条用于说明的传递路径（节点序列）。
+ */
+export function inferredConclusions(edges: OrderEdge[]): Array<OrderEdge & { path: string[] }> {
+  const g = buildGraph(edges)
+  const direct = new Set<string>()
+  for (const e of edges) direct.add(`${e.from}→${e.to}`)
+  const out: Array<OrderEdge & { path: string[] }> = []
+  const sources = g.nodes().sort()
+  for (const source of sources) {
+    // BFS 记录前驱，得到可复核的传递路径
+    const prev = new Map<string, string>()
+    const seen = new Set<string>([source])
+    const queue: string[] = [source]
+    while (queue.length > 0) {
+      const cur = queue.shift()!
+      g.forEachOutboundNeighbor(cur, (nb) => {
+        if (seen.has(nb)) return
+        seen.add(nb)
+        prev.set(nb, cur)
+        queue.push(nb)
+      })
+    }
+    for (const target of [...seen].sort()) {
+      if (target === source || direct.has(`${source}→${target}`)) continue
+      const path = [target]
+      let p = prev.get(target)!
+      while (p !== source) {
+        path.unshift(p)
+        p = prev.get(p)!
+      }
+      path.unshift(source)
+      out.push({ id: `inferred:${source}→${target}`, from: source, to: target, path })
+    }
+  }
+  return out
+}
+
 /** BFS 求 source → target 的一条有向路径，不存在返回 null */
 export function findPath(g: DirectedGraph, source: string, target: string): string[] | null {
   if (!g.hasNode(source) || !g.hasNode(target)) return null

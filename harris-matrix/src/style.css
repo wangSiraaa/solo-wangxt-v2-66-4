@@ -223,6 +223,14 @@ input[type='checkbox'] {
   border-top: 1px solid #ddd;
 }
 
+.missing-banner {
+  background: #fff3e0;
+  border-bottom: 1px solid #f0c18b;
+  color: #8a4b00;
+  font-size: 12px;
+  padding: 6px 12px;
+}
+
 .modal-mask {
   position: fixed;
   inset: 0;

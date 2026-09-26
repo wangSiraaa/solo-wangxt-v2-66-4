@@ -6,9 +6,7 @@ import RelationPanel from './components/RelationPanel.vue'
 import BatchPanel from './components/BatchPanel.vue'
 import {
   autoLayout,
-  cancelCycle,
   clearAll,
-  confirmCycle,
   exportProject,
   importProject,
   lastBatch,
@@ -17,12 +15,13 @@ import {
   refresh,
   state,
   undo,
-  unitLabel,
 } from './store'
 
 const fileInput = ref<HTMLInputElement>()
 
-const cyclePathText = computed(() => state.pendingCycle?.path.map(unitLabel).join(' → ') ?? '')
+const missingNames = computed(() =>
+  state.missingAttachments.map((e) => e.attachment?.name).filter((n): n is string => Boolean(n)),
+)
 
 onMounted(() => {
   void refresh()
@@ -60,6 +59,11 @@ function onImportFile(e: Event) {
       <button class="danger" @click="clearAll()">清空</button>
     </header>
 
+    <div v-if="missingNames.length" class="missing-banner">
+      ⚠️ {{ missingNames.length }} 个附件在浏览器本地缺失（{{ missingNames.slice(0, 3).join('、')
+      }}{{ missingNames.length > 3 ? ' 等' : '' }}）：证据元数据与审计链完整保留，工程可正常使用，请在现场重新采集附件。
+    </div>
+
     <main class="main">
       <aside class="sidebar">
         <UnitPanel />
@@ -70,22 +74,8 @@ function onImportFile(e: Event) {
     </main>
 
     <footer class="statusbar">
-      数据仅保存于本机浏览器 IndexedDB，不上传任何现场资料。地层身份与画布位置分离存储；撤销以批次为单位，关系与证据引用一并恢复。
+      数据仅保存于本机浏览器 IndexedDB（含附件内容），不上传任何现场资料。原始观察须证据复核通过（至少一条已采纳且无未解决驳回、不成环）才进入有效偏序；推断结论随有效观察集实时重算；复核记录不可删除，只能追加撤销。
     </footer>
-
-    <!-- 成环确认对话框：给出完整环路径 -->
-    <div v-if="state.pendingCycle" class="modal-mask" @click.self="cancelCycle">
-      <div class="modal">
-        <h3>该关系将构成环</h3>
-        <p>新增此先后关系后，将形成如下循环：</p>
-        <p class="cycle-path">{{ cyclePathText }}</p>
-        <p>这通常意味着两条记录互相矛盾。可以保留为矛盾记录（标红显示，不删除任何原始观察），或取消本次添加。</p>
-        <div class="modal-actions">
-          <button class="danger" @click="confirmCycle">保留为矛盾记录</button>
-          <button @click="cancelCycle">取消</button>
-        </div>
-      </div>
-    </div>
 
     <div v-if="state.toast" class="toast">{{ state.toast }}</div>
   </div>

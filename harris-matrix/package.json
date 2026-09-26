@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test": "esbuild test/acceptance.ts --bundle --platform=node --format=esm --banner:js=\"import { createRequire as __cr } from 'module'; const require = __cr(import.meta.url);\" --outfile=.test-build/acceptance.mjs --log-level=warning && node .test-build/acceptance.mjs"
   },
   "dependencies": {
     "cytoscape": "^3.31.2",

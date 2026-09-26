@@ -1,7 +1,19 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import cytoscape from 'cytoscape'
-import { activeRelations, orderEdges, redundantIds, savePosition, state } from '../store'
+import {
+  activeContemporary,
+  activeRelations,
+  conflictIds,
+  evidenceBucket,
+  inferredEdges,
+  orderEdges,
+  redundantIds,
+  relationEffective,
+  savePosition,
+  state,
+  unitLabel,
+} from '../store'
 import { layeredPositions } from '../graph'
 
 const el = ref<HTMLElement>()
@@ -40,7 +52,25 @@ const style: cytoscape.StylesheetJson = [
       'arrow-scale': 1.2,
     },
   },
-  { selector: 'edge.inferred', style: { 'line-style': 'dashed' } },
+  { selector: 'edge.inferred', style: { 'line-style': 'dashed', 'line-color': '#ef6c00', 'target-arrow-color': '#ef6c00' } },
+  { selector: 'edge.inferred-label', style: { label: '推断' } },
+  {
+    selector: 'edge.pending-label',
+    style: { label: '待复核', 'font-size': 10, color: '#b26a00', 'text-rotation': 'autorotate' },
+  },
+  {
+    selector: 'edge.rejected-label',
+    style: { label: '已否决', 'font-size': 10, color: '#c62828', 'text-rotation': 'autorotate' },
+  },
+  {
+    selector: 'edge.ineffective',
+    style: {
+      'line-style': 'dotted',
+      'line-color': '#bdbdbd',
+      'target-arrow-color': '#bdbdbd',
+      opacity: 0.7,
+    },
+  },
   {
     selector: 'edge.conflict',
     style: {
@@ -69,11 +99,15 @@ const style: cytoscape.StylesheetJson = [
 
 function rebuild() {
   if (!cy) return
-  // 简化视图：仅隐藏传递冗余边；原始关系全部保留在库中
+  // 简化视图：仅隐藏有效观察中的传递冗余边；原始关系全部保留在库中
   const hidden = state.viewMode === 'simplified' ? redundantIds.value : new Set<string>()
 
   const connected = new Set<string>()
-  for (const r of activeRelations.value) {
+  for (const e of orderEdges.value) {
+    connected.add(e.from)
+    connected.add(e.to)
+  }
+  for (const r of activeContemporary.value) {
     connected.add(r.from)
     connected.add(r.to)
   }
@@ -83,16 +117,46 @@ function rebuild() {
     classes: [connected.has(u.id) ? '' : 'isolated', state.selectedUnitId === u.id ? 'selected' : ''].join(' '),
   }))
 
-  const edges = activeRelations.value
-    .filter((r) => !hidden.has(r.id))
-    .map((r) => ({
-      data: { id: r.id, source: r.from, target: r.to },
-      classes: [
-        r.kind === 'contemporary' ? 'contemporary' : '',
-        r.conflict ? 'conflict' : '',
-        r.source === 'inference' && r.kind === 'earlier' ? 'inferred' : '',
-      ].join(' '),
-    }))
+  const edges: any[] = []
+
+  // 有效观察边（通过证据闸门且不成环）
+  for (const e of orderEdges.value) {
+    if (hidden.has(e.id)) continue
+    edges.push({ data: { id: e.id, source: e.from, target: e.to }, classes: [] })
+  }
+
+  // 推断结论：有效观察偏序的传递闭包，实时重算
+  for (const e of inferredEdges.value) {
+    edges.push({
+      data: { id: e.id, source: e.from, target: e.to },
+      classes: ['inferred', 'inferred-label'],
+    })
+  }
+
+  // 同期关联：同样须通过证据闸门
+  for (const r of activeContemporary.value) {
+    edges.push({ data: { id: r.id, source: r.from, target: r.to }, classes: ['contemporary'] })
+  }
+
+  // 成环冲突：复核决定保留，红边提示但不进入偏序
+  for (const r of activeRelations.value) {
+    if (r.kind !== 'earlier' || r.source !== 'observation') continue
+    if (conflictIds.value.has(r.id)) {
+      edges.push({ data: { id: r.id, source: r.from, target: r.to }, classes: ['conflict'] })
+    }
+  }
+
+  // 未通过证据闸门的“早于”观察（待复核 / 有未解决驳回）：灰色虚线提示存在但不生效
+  for (const r of activeRelations.value) {
+    if (r.kind !== 'earlier' || r.source !== 'observation') continue
+    if (relationEffective(r) || conflictIds.value.has(r.id)) continue
+    const b = evidenceBucket(r.id)
+    const label = b.accepted.length === 0 ? '待复核' : '已否决'
+    edges.push({
+      data: { id: `pending:${r.id}`, source: r.from, target: r.to },
+      classes: ['ineffective', label === '待复核' ? 'pending-label' : 'rejected-label'],
+    })
+  }
 
   // 缺省位置：按分层算法即时计算（不写入库）
   const auto = layeredPositions(
@@ -128,7 +192,15 @@ onMounted(() => {
 })
 
 watch(
-  () => [state.units, state.relations, state.viewMode, state.layoutVersion, state.selectedUnitId],
+  () => [
+    state.units,
+    state.relations,
+    state.evidences,
+    state.reviews,
+    state.viewMode,
+    state.layoutVersion,
+    state.selectedUnitId,
+  ],
   rebuild,
   { deep: true },
 )
@@ -150,9 +222,10 @@ onBeforeUnmount(() => {
       <span><i class="sw fill"></i>填充</span>
       <span><i class="sw cut"></i>切割</span>
       <span><i class="sw iface"></i>界面</span>
-      <span><i class="ln solid"></i>观察</span>
-      <span><i class="ln dashed"></i>推断</span>
+      <span><i class="ln solid"></i>有效观察</span>
+      <span><i class="ln dashed"></i>推断结论</span>
       <span><i class="ln dotted"></i>同期（无向）</span>
+      <span><i class="ln gray"></i>待复核/已否决</span>
       <span><i class="ln red"></i>矛盾</span>
     </div>
   </div>
@@ -210,7 +283,8 @@ onBeforeUnmount(() => {
   display: inline-block;
   border-top: 2px solid #777;
 }
-.ln.dashed { border-top-style: dashed; }
+.ln.dashed { border-top-style: dashed; border-top-color: #ef6c00; }
 .ln.dotted { border-top-color: #7e57c2; border-top-style: dotted; }
+.ln.gray { border-top-color: #bdbdbd; border-top-style: dotted; }
 .ln.red { border-top-color: #d32f2f; border-top-style: dashed; }
 </style>
