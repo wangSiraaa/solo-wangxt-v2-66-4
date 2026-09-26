@@ -92,6 +92,53 @@ export function redundantEdges(edges: OrderEdge[]): Set<string> {
   return redundant
 }
 
+/**
+ * 实时冲突判定：按给定顺序逐条接受边，若某条边加入时成环（to→…→from 已可达），
+ * 则它在当前有效观察集下构成冲突；此前构成冲突的边随其他边被否决而可能自动解除。
+ * 返回每条冲突边 → 完整环路径（供界面展示矛盾，绝不静默丢弃复核决定）。
+ */
+export function liveConflicts(edges: OrderEdge[]): Map<string, string[]> {
+  const conflicts = new Map<string, string[]>()
+  const accepted: OrderEdge[] = []
+  for (const e of edges) {
+    const cycle = cyclePathIfAdded(accepted, e.from, e.to)
+    if (cycle) conflicts.set(e.id, cycle)
+    else accepted.push(e)
+  }
+  return conflicts
+}
+
+/**
+ * 推断关系实时重算：在无冲突的有效观察 DAG 上求传递闭包，
+ * 凡「可经 ≥2 跳到达且无直接观察边」的有序对，均为导出的推断关系。
+ * 返回稳定排序的 OrderEdge（id 形如 "inf:A→B"），有效观察集一变即重算。
+ */
+export function transitiveInferences(baseEdges: OrderEdge[]): OrderEdge[] {
+  const g = buildGraph(baseEdges)
+  const direct = new Set<string>()
+  for (const e of baseEdges) direct.add(`${e.from}→${e.to}`)
+  const inferred: OrderEdge[] = []
+  g.forEachNode((source) => {
+    // BFS 分层，只记录距离 ≥2 的可达点
+    const dist = new Map<string, number>([[source, 0]])
+    const queue: string[] = [source]
+    while (queue.length > 0) {
+      const cur = queue.shift()!
+      g.forEachOutboundNeighbor(cur, (nb) => {
+        if (dist.has(nb)) return
+        dist.set(nb, dist.get(cur)! + 1)
+        queue.push(nb)
+      })
+    }
+    for (const [target, d] of dist) {
+      if (d >= 2 && !direct.has(`${source}→${target}`)) {
+        inferred.push({ id: `inf:${source}→${target}`, from: source, to: target })
+      }
+    }
+  })
+  return inferred.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+}
+
 /** 偏序闭包：全部可达对 "a→b"（排序后），用于导出/导入的一致性校验 */
 export function reachablePairs(edges: OrderEdge[]): string[] {
   const g = buildGraph(edges)

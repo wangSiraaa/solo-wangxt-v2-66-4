@@ -1,7 +1,17 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import cytoscape from 'cytoscape'
-import { activeRelations, orderEdges, redundantIds, savePosition, state } from '../store'
+import {
+  activeRelations,
+  conflictInfo,
+  gateState,
+  inferredEdges,
+  matrixEdges,
+  orderEdges,
+  redundantIds,
+  savePosition,
+  state,
+} from '../store'
 import { layeredPositions } from '../graph'
 
 const el = ref<HTMLElement>()
@@ -33,23 +43,50 @@ const style: cytoscape.StylesheetJson = [
     selector: 'edge',
     style: {
       width: 2,
-      'line-color': '#777',
+      'line-color': '#2e7d32',
       'target-arrow-shape': 'triangle',
-      'target-arrow-color': '#777',
+      'target-arrow-color': '#2e7d32',
       'curve-style': 'bezier',
       'arrow-scale': 1.2,
     },
   },
-  { selector: 'edge.inferred', style: { 'line-style': 'dashed' } },
+  /* 实时导出的推断关系：橙色虚线 */
+  {
+    selector: 'edge.inferred',
+    style: {
+      'line-style': 'dashed',
+      'line-color': '#ef6c00',
+      'target-arrow-color': '#ef6c00',
+      label: '推断',
+      'font-size': 10,
+      color: '#ef6c00',
+      'text-rotation': 'autorotate',
+    },
+  },
+  /* 采纳后构成环：保留复核决定，红色虚线冲突 */
   {
     selector: 'edge.conflict',
     style: {
       'line-color': '#d32f2f',
       'target-arrow-color': '#d32f2f',
       'line-style': 'dashed',
-      label: '矛盾',
+      label: '环冲突',
       'font-size': 10,
       color: '#d32f2f',
+      'text-rotation': 'autorotate',
+    },
+  },
+  /* 尚未生效（待复核 / 未解决否决）的原始观察：灰点线，不参与布局与计算 */
+  {
+    selector: 'edge.noneffective',
+    style: {
+      'line-style': 'dotted',
+      'line-color': '#bdbdbd',
+      'target-arrow-color': '#bdbdbd',
+      opacity: 0.6,
+      label: 'data(stateLabel)',
+      'font-size': 9,
+      color: '#9e9e9e',
       'text-rotation': 'autorotate',
     },
   },
@@ -59,6 +96,7 @@ const style: cytoscape.StylesheetJson = [
       'line-style': 'dotted',
       'line-color': '#7e57c2',
       'target-arrow-shape': 'none',
+      'target-arrow-color': '#7e57c2',
       label: '同期',
       'font-size': 10,
       color: '#7e57c2',
@@ -69,7 +107,7 @@ const style: cytoscape.StylesheetJson = [
 
 function rebuild() {
   if (!cy) return
-  // 简化视图：仅隐藏传递冗余边；原始关系全部保留在库中
+  // 简化视图：隐藏传递冗余边与全部推断边；原始关系全部保留
   const hidden = state.viewMode === 'simplified' ? redundantIds.value : new Set<string>()
 
   const connected = new Set<string>()
@@ -83,18 +121,42 @@ function rebuild() {
     classes: [connected.has(u.id) ? '' : 'isolated', state.selectedUnitId === u.id ? 'selected' : ''].join(' '),
   }))
 
-  const edges = activeRelations.value
-    .filter((r) => !hidden.has(r.id))
-    .map((r) => ({
-      data: { id: r.id, source: r.from, target: r.to },
-      classes: [
-        r.kind === 'contemporary' ? 'contemporary' : '',
-        r.conflict ? 'conflict' : '',
-        r.source === 'inference' && r.kind === 'earlier' ? 'inferred' : '',
-      ].join(' '),
-    }))
+  // 有效观察（含环冲突）+ 实时推断
+  const infIds = new Set(inferredEdges.value.map((e) => e.id))
+  const matrix = matrixEdges.value.filter((e) => !hidden.has(e.id))
+  const matrixIds = new Set(matrixEdges.value.map((e) => e.id))
 
-  // 缺省位置：按分层算法即时计算（不写入库）
+  // 尚未生效的原始观察（待复核/否决）：灰点线显示，但不参与布局与偏序
+  const nonEffective = activeRelations.value.filter(
+    (r) => r.kind === 'earlier' && !matrixIds.has(r.id),
+  )
+
+  const contemp = activeRelations.value.filter((r) => r.kind === 'contemporary')
+
+  const edges = [
+    ...matrix.map((e) => ({
+      data: { id: e.id, source: e.from, target: e.to, stateLabel: '' },
+      classes: [
+        infIds.has(e.id) ? 'inferred' : '',
+        conflictInfo.value.has(e.id) ? 'conflict' : '',
+      ].join(' '),
+    })),
+    ...nonEffective.map((r) => ({
+      data: {
+        id: r.id,
+        source: r.from,
+        target: r.to,
+        stateLabel: gateState(r) === 'rejected' ? '否决' : '待复核',
+      },
+      classes: 'noneffective',
+    })),
+    ...contemp.map((r) => ({
+      data: { id: r.id, source: r.from, target: r.to, stateLabel: '同期' },
+      classes: 'contemporary',
+    })),
+  ]
+
+  // 布局只依据无冲突的有效观察边（推断与待复核边不影响分层）
   const auto = layeredPositions(
     state.units.map((u) => u.id),
     orderEdges.value,
@@ -128,7 +190,15 @@ onMounted(() => {
 })
 
 watch(
-  () => [state.units, state.relations, state.viewMode, state.layoutVersion, state.selectedUnitId],
+  () => [
+    state.units,
+    state.relations,
+    state.evidences,
+    state.reviews,
+    state.viewMode,
+    state.layoutVersion,
+    state.selectedUnitId,
+  ],
   rebuild,
   { deep: true },
 )
@@ -143,17 +213,18 @@ onBeforeUnmount(() => {
   <div class="canvas-wrap">
     <div ref="el" class="canvas"></div>
     <div v-if="state.units.length === 0" class="empty-hint">
-      尚无层位。点击「载入示例」查看含切割事件、孤立层位与矛盾记录的示范工程。
+      尚无层位。点击「载入示例」查看含证据复核、成环冲突与缺失附件提示的示范工程。
     </div>
     <div class="legend">
       <span><i class="sw deposit"></i>堆积</span>
       <span><i class="sw fill"></i>填充</span>
       <span><i class="sw cut"></i>切割</span>
       <span><i class="sw iface"></i>界面</span>
-      <span><i class="ln solid"></i>观察</span>
-      <span><i class="ln dashed"></i>推断</span>
+      <span><i class="ln solid"></i>已采纳观察</span>
+      <span><i class="ln dashed"></i>实时推断</span>
+      <span><i class="ln gray"></i>待复核/否决</span>
       <span><i class="ln dotted"></i>同期（无向）</span>
-      <span><i class="ln red"></i>矛盾</span>
+      <span><i class="ln red"></i>环冲突</span>
     </div>
   </div>
 </template>
@@ -208,9 +279,10 @@ onBeforeUnmount(() => {
 .ln {
   width: 18px;
   display: inline-block;
-  border-top: 2px solid #777;
+  border-top: 2px solid #2e7d32;
 }
-.ln.dashed { border-top-style: dashed; }
+.ln.dashed { border-top-color: #ef6c00; border-top-style: dashed; }
 .ln.dotted { border-top-color: #7e57c2; border-top-style: dotted; }
+.ln.gray { border-top-color: #bdbdbd; border-top-style: dotted; }
 .ln.red { border-top-color: #d32f2f; border-top-style: dashed; }
 </style>
